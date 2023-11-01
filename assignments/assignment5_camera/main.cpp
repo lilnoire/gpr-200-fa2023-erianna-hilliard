@@ -1,27 +1,47 @@
 #include <stdio.h>
 #include <math.h>
 
-#include <ew/external/glad.h>
-#include <ew/ewMath/ewMath.h>
+#include <eh/external/glad.h>
+#include <eh/ehMath/ehMath.h>
 #include <GLFW/glfw3.h>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 
-#include <ew/shader.h>
-#include <ew/procGen.h>
-#include <ew/transform.h>
+#include <eh/shader.h>
+#include <eh/ehMath/vec3.h>
+#include <eh/procGen.h>
+#include <eh/transformations.h>
+#include <eh/camera.h>
 
 void framebufferSizeCallback(GLFWwindow* window, int width, int height);
 
-//Projection will account for aspect ratio!
-const int SCREEN_WIDTH = 1080;
+//Square aspect ratio for now. We will account for this with projection later.
+const int SCREEN_WIDTH = 720;
 const int SCREEN_HEIGHT = 720;
 
-const int NUM_CUBES = 4;
-ew::Transform cubeTransforms[NUM_CUBES];
+float prevTime;
 
-int main() {
+const int NUM_CUBES = 4;
+eh::Transform cubeTransforms[NUM_CUBES]; 
+
+struct CameraControls
+{
+	double prevMouseX = 0.0f;
+	double prevMouseY = 0.0f; //Mouse position from previous frame
+	float yaw = 0.0f;
+	float pitch = 0.0f; //Degrees
+	float mouseSensitivity = 0.1f; //How fast to turn with mouse
+	bool firstMouse = true; //Flag to store initial mouse position
+	float moveSpeed = 5.0f; //How fast to move with arrow keys (M/S)
+
+	void moveCamera(GLFWwindow* window, eh::Camera* camera, float deltaTime);
+};
+
+void resetCamera(eh::Camera& camera, CameraControls& cameraControls);
+
+int main()
+{
 	printf("Initializing...");
 	if (!glfwInit()) {
 		printf("GLFW failed to init!");
@@ -54,10 +74,10 @@ int main() {
 	//Depth testing - required for depth sorting!
 	glEnable(GL_DEPTH_TEST);
 
-	ew::Shader shader("assets/vertexShader.vert", "assets/fragmentShader.frag");
+	eh::Shader shader("assets/vertexShader.vert", "assets/fragmentShader.frag");
 	
 	//Cube mesh
-	ew::Mesh cubeMesh(ew::createCube(0.5f));
+	eh::Mesh cubeMesh(eh::createCube(0.5f));
 
 	//Cube positions
 	for (size_t i = 0; i < NUM_CUBES; i++)
@@ -66,19 +86,31 @@ int main() {
 		cubeTransforms[i].position.y = i / (NUM_CUBES / 2) - 0.5;
 	}
 
+	eh::Camera camera;
+	CameraControls cameraControls;
+
+	resetCamera(camera, cameraControls);
+
 	while (!glfwWindowShouldClose(window)) {
 		glfwPollEvents();
+
+		//Calculate deltaTime
+		float time = (float)glfwGetTime(); //Timestamp of current frame
+		float deltaTime = time - prevTime;
+		prevTime = time;
+
+		//Pass deltaTime into moveCamera. Update this function to include a 4th parameter.
+		cameraControls.moveCamera(window, &camera, deltaTime);
+
 		glClearColor(0.3f, 0.4f, 0.9f, 1.0f);
 		//Clear both color buffer AND depth buffer
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 		//Set uniforms
-		shader.use();
+		shader.use(); 
 
-		//TODO: Set model matrix uniform
 		for (size_t i = 0; i < NUM_CUBES; i++)
 		{
-			//Construct model matrix
 			shader.setMat4("_Model", cubeTransforms[i].getModelMatrix());
 			cubeMesh.draw();
 		}
@@ -102,8 +134,13 @@ int main() {
 				ImGui::PopID();
 			}
 			ImGui::Text("Camera");
+
+			if (ImGui::Button("Reset")) {
+				resetCamera(camera, cameraControls);
+			}
+
 			ImGui::End();
-			
+
 			ImGui::Render();
 			ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 		}
@@ -111,6 +148,8 @@ int main() {
 		glfwSwapBuffers(window);
 	}
 	printf("Shutting down...");
+
+
 }
 
 void framebufferSizeCallback(GLFWwindow* window, int width, int height)
@@ -118,3 +157,99 @@ void framebufferSizeCallback(GLFWwindow* window, int width, int height)
 	glViewport(0, 0, width, height);
 }
 
+void CameraControls::moveCamera(GLFWwindow* window, eh::Camera* camera, float deltaTime)
+{
+	bool prevFirstMouse = firstMouse;
+	//If right mouse is not held, release cursor and return early.
+	if (!glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_2)) {
+		//Release cursor
+		glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+		firstMouse = true;
+		return;
+	}
+
+	//GLFW_CURSOR_DISABLED hides the cursor, but the position will still be changed as we move our mouse.
+	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+
+	{
+		//Get screen mouse position this frame
+		double mouseX, mouseY;
+
+		glfwGetCursorPos(window, &mouseX, &mouseY);
+
+		//If we just started right clicking, set prevMouse values to current position.
+		//This prevents a bug where the camera moves as soon as we click.
+		if (firstMouse)
+		{
+			firstMouse = false;
+			prevMouseX = mouseX;
+			prevMouseY = mouseY;
+		}
+
+		float mouseDeltaX = (float)(mouseX - prevMouseX);
+		float mouseDeltaY = (float)(mouseY - prevMouseY);
+
+		prevMouseX = mouseX;
+		prevMouseY = mouseY;
+
+		yaw += mouseDeltaX * mouseSensitivity;
+		pitch -= mouseDeltaY * mouseSensitivity;
+		pitch = eh::Clamp(pitch, -89.0f, 890.f);
+	}
+
+	{
+		float yawRad = eh::Radians(yaw);
+		float pitchRad = eh::Radians(pitch);
+
+		eh::Vec3 forward;
+		forward.x = cosf(pitchRad) * sinf(yawRad);
+		forward.y = sinf(pitchRad);
+		forward.z = cosf(pitchRad) * -cosf(yawRad);
+		forward = eh::Normalize(forward);
+
+		eh::Vec3 right = eh::Normalize(eh::Cross(forward, eh::Vec3(0, 1, 0)));
+		eh::Vec3 up = eh::Normalize(eh::Cross(right, forward));
+
+		float speed = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT);
+
+		float moveDelta = speed * deltaTime;
+
+		if (glfwGetKey(window, GLFW_KEY_W)) {
+			camera->position += forward * moveDelta;
+		}
+		if (glfwGetKey(window, GLFW_KEY_S)) {
+			camera->position -= forward * moveDelta;
+		}
+		if (glfwGetKey(window, GLFW_KEY_D)) {
+			camera->position += right * moveDelta;
+		}
+		if (glfwGetKey(window, GLFW_KEY_A)) {
+			camera->position -= right * moveDelta;
+		}
+		if (glfwGetKey(window, GLFW_KEY_E)) {
+			camera->position += up * moveDelta;
+		}
+		if (glfwGetKey(window, GLFW_KEY_Q)) {
+			camera->position -= up * moveDelta;
+		}
+
+		//Camera will now look at a position along this forward axis
+		camera->target = camera->position + forward;
+
+	}
+}
+
+void resetCamera(eh::Camera& camera, CameraControls& cameraControls)
+{
+	camera.position = eh::Vec3(0, 0, 3);
+	camera.target = eh::Vec3(0);
+	camera.aspectRatio = (float)SCREEN_WIDTH / SCREEN_HEIGHT;
+	camera.fov = 60.0f;
+	camera.orthoHeight = 6.0f;
+	camera.nearPlane = 0.1f;
+	camera.farPlane = 100.0f;
+	camera.orthographic = false;
+
+	cameraControls.yaw = 0.0f;
+	cameraControls.pitch = 0.0f;
+}
