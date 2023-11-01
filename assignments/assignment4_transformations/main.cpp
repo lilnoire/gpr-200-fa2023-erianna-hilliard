@@ -1,22 +1,26 @@
 #include <stdio.h>
 #include <math.h>
 
-#include <ew/external/glad.h>
-#include <ew/ewMath/ewMath.h>
+#include <eh/external/glad.h>
+#include <eh/ehMath/ehMath.h>
 #include <GLFW/glfw3.h>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 
-#include <ew/shader.h>
-#include <ew/ewMath/vec3.h>
-#include <ew/procGen.h>
+#include <eh/shader.h>
+#include <eh/ehMath/vec3.h>
+#include <eh/procGen.h>
+#include <eh/transformations.h>
 
 void framebufferSizeCallback(GLFWwindow* window, int width, int height);
 
 //Square aspect ratio for now. We will account for this with projection later.
 const int SCREEN_WIDTH = 720;
 const int SCREEN_HEIGHT = 720;
+
+const int NUM_CUBES = 4; 
+eh::Transform cubeTransforms[NUM_CUBES]; 
 
 int main() {
 	printf("Initializing...");
@@ -51,11 +55,18 @@ int main() {
 	//Depth testing - required for depth sorting!
 	glEnable(GL_DEPTH_TEST);
 
-	ew::Shader shader("assets/vertexShader.vert", "assets/fragmentShader.frag");
-	
+	eh::Shader shader("assets/vertexShader.vert", "assets/fragmentShader.frag");
+
 	//Cube mesh
-	ew::Mesh cubeMesh(ew::createCube(0.5f));
-	
+	eh::Mesh cubeMesh(eh::createCube(0.5f));
+
+	//Cube positions
+	for (size_t i = 0; i < NUM_CUBES; i++)
+	{
+		cubeTransforms[i].position.x = i % (NUM_CUBES / 2) - 0.5;
+		cubeTransforms[i].position.y = i / (NUM_CUBES / 2) - 0.5;
+	}
+
 	while (!glfwWindowShouldClose(window)) {
 		glfwPollEvents();
 		glClearColor(0.3f, 0.4f, 0.9f, 1.0f);
@@ -65,10 +76,12 @@ int main() {
 		//Set uniforms
 		shader.use();
 
-		//TODO: Set model matrix uniform
-
-		cubeMesh.draw();
-
+		for (size_t i = 0; i < NUM_CUBES; i++)
+		{
+			shader.setMat4("_Model", cubeTransforms[i].getModelMatrix());
+			cubeMesh.draw();
+		}
+		 
 		//Render UI
 		{
 			ImGui_ImplGlfw_NewFrame();
@@ -76,10 +89,23 @@ int main() {
 			ImGui::NewFrame();
 
 			ImGui::Begin("Transform");
+
+			for (size_t i = 0; i < NUM_CUBES; i++)
+			{
+				ImGui::PushID(i);
+				if (ImGui::CollapsingHeader("Transform")) {
+					ImGui::DragFloat3("Position", &cubeTransforms[i].position.x, 0.05f);
+					ImGui::DragFloat3("Rotation", &cubeTransforms[i].rotation.x, 1.0f);
+					ImGui::DragFloat3("Scale", &cubeTransforms[i].scale.x, 0.05f);
+				}
+				ImGui::PopID();
+			}
+
 			ImGui::End();
 
 			ImGui::Render();
 			ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
 		}
 
 		glfwSwapBuffers(window);
@@ -91,4 +117,3 @@ void framebufferSizeCallback(GLFWwindow* window, int width, int height)
 {
 	glViewport(0, 0, width, height);
 }
-
